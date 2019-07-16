@@ -31,7 +31,6 @@ import (
 	"time"
 
 	"github.com/fission/fission/pkg/types"
-	"github.com/fission/fission/pkg/utils"
 	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
 	"github.com/satori/go.uuid"
@@ -42,6 +41,7 @@ import (
 	fv1 "github.com/fission/fission/pkg/apis/fission.io/v1"
 	"github.com/fission/fission/pkg/crd"
 	ferror "github.com/fission/fission/pkg/error"
+	"github.com/fission/fission/pkg/error/network"
 	executorClient "github.com/fission/fission/pkg/executor/client"
 	"github.com/fission/fission/pkg/redis"
 	"github.com/fission/fission/pkg/throttler"
@@ -70,9 +70,10 @@ type (
 	}
 
 	tsRoundTripperParams struct {
-		timeout         time.Duration
-		timeoutExponent int
-		keepAlive       time.Duration
+		timeout          time.Duration
+		timeoutExponent  int
+		disableKeepAlive bool
+		keepAliveTime    time.Duration
 
 		// maxRetires is the max times for RetryingRoundTripper to retry a request.
 		// Default maxRetries is 10, which means router will retry for
@@ -273,7 +274,7 @@ func (roundTripper RetryingRoundTripper) RoundTrip(req *http.Request) (resp *htt
 		// over-riding default settings.
 		transport.DialContext = (&net.Dialer{
 			Timeout:   executingTimeout,
-			KeepAlive: roundTripper.funcHandler.tsRoundTripperParams.keepAlive,
+			KeepAlive: roundTripper.funcHandler.tsRoundTripperParams.keepAliveTime,
 		}).DialContext
 
 		overhead := time.Since(startTime)
@@ -309,7 +310,8 @@ func (roundTripper RetryingRoundTripper) RoundTrip(req *http.Request) (resp *htt
 		}
 
 		// if transport.RoundTrip returns a non-network dial error, then relay it back to user
-		if !utils.IsNetworkDialError(err) {
+		netErr := network.Adapter(err)
+		if netErr != nil && !netErr.IsDialError() {
 			err = errors.Wrapf(err, "error sending request to function %v", fnMeta.Name)
 			return resp, err
 		}
@@ -430,14 +432,17 @@ func (fh functionHandler) handler(responseWriter http.ResponseWriter, request *h
 					Proxy: http.ProxyFromEnvironment,
 					DialContext: (&net.Dialer{
 						Timeout:   fh.tsRoundTripperParams.timeout,
-						KeepAlive: fh.tsRoundTripperParams.keepAlive,
+						KeepAlive: fh.tsRoundTripperParams.keepAliveTime,
 					}).DialContext,
 					MaxIdleConns:          100,
 					IdleConnTimeout:       90 * time.Second,
 					TLSHandshakeTimeout:   10 * time.Second,
 					ExpectContinueTimeout: 1 * time.Second,
-					// Disables caching, Please refer to issue and specifically comment: https://github.com/fission/fission/issues/723#issuecomment-398781995
-					DisableKeepAlives: true,
+					// Default disables caching, Please refer to issue and specifically comment:
+					// https://github.com/fission/fission/issues/723#issuecomment-398781995
+					// You can change it by setting environment variable "ROUTER_ROUND_TRIP_DISABLE_KEEP_ALIVE"
+					// of router or helm variable "disableKeepAlive" before installation to false.
+					DisableKeepAlives: fh.tsRoundTripperParams.disableKeepAlive,
 				},
 			},
 		},

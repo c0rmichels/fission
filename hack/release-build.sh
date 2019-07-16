@@ -131,19 +131,21 @@ build_all_envs() {
     local version=$1
 
     # call with version, env dir, image name base, image name variant
-    build_env_image "$version" "nodejs"   "node-env"     ""
-    build_env_image "$version" "nodejs"   "node-env"     "debian"
-    build_env_image "$version" "binary"   "binary-env"   ""
-    build_env_image "$version" "dotnet"   "dotnet-env"   ""
-    build_env_image "$version" "dotnet20" "dotnet20-env" ""
-    build_env_image "$version" "go"       "go-env"       ""
-    build_env_image "$version" "go"       "go-env"       "1.11.4"
-    build_env_image "$version" "perl"     "perl-env"     ""
-    build_env_image "$version" "php7"     "php-env"      ""
-    build_env_image "$version" "python"   "python-env"   ""
-    build_env_image "$version" "python"   "python-env"   "2.7"
-    build_env_image "$version" "ruby"     "ruby-env"     ""
-    build_env_image "$version" "jvm"      "jvm-env"      ""
+    build_env_image "$version" "nodejs"               "node-env"            ""
+    build_env_image "$version" "nodejs"               "node-env"            "debian"
+    build_env_image "$version" "binary"               "binary-env"          ""
+    build_env_image "$version" "dotnet"               "dotnet-env"          ""
+    build_env_image "$version" "dotnet20"             "dotnet20-env"        ""
+    build_env_image "$version" "go"                   "go-env"              ""
+    build_env_image "$version" "go"                   "go-env"              "1.11.4"
+    build_env_image "$version" "go"                   "go-env"              "1.12"
+    build_env_image "$version" "perl"                 "perl-env"            ""
+    build_env_image "$version" "php7"                 "php-env"             ""
+    build_env_image "$version" "python"               "python-env"          ""
+    build_env_image "$version" "python"               "python-env"          "2.7"
+    build_env_image "$version" "ruby"                 "ruby-env"            ""
+    build_env_image "$version" "jvm"                  "jvm-env"             ""
+    build_env_image "$version" "tensorflow-serving"   "tensorflow-serving-env"  ""
 }
 
 build_env_builder_image() {
@@ -179,11 +181,12 @@ build_all_env_builders() {
     build_env_builder_image "$version" "binary"   "binary-builder"   ""
     build_env_builder_image "$version" "go"       "go-builder"       ""
     build_env_builder_image "$version" "go"       "go-builder"       "1.11.4"
+    build_env_builder_image "$version" "go"       "go-builder"       "1.12"
     build_env_builder_image "$version" "jvm"      "jvm-builder"      ""
     build_env_builder_image "$version" "nodejs"   "node-builder"     ""
     build_env_builder_image "$version" "php7"     "php-builder"      ""
-    build_env_builder_image "$version" "ruby"     "ruby-env"         ""
-    build_env_builder_image "$version" "dotnet20" "dotnet20-env"     ""
+    build_env_builder_image "$version" "ruby"     "ruby-builder"     ""
+    build_env_builder_image "$version" "dotnet20" "dotnet20-builder" ""
 }
 
 build_charts() {

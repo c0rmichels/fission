@@ -71,19 +71,21 @@ push_all_envs() {
     local version=$1
 
     # call with version, env dir, image name base, image name variant
-    push_env_image "$version" "nodejs"   "node-env"     ""
-    push_env_image "$version" "nodejs"   "node-env"     "debian"
-    push_env_image "$version" "binary"   "binary-env"   ""
-    push_env_image "$version" "dotnet"   "dotnet-env"   ""
-    push_env_image "$version" "dotnet20" "dotnet20-env" ""
-    push_env_image "$version" "go"       "go-env"       ""
-    push_env_image "$version" "go"       "go-env"       "1.11.4"
-    push_env_image "$version" "perl"     "perl-env"     ""
-    push_env_image "$version" "php7"     "php-env"      ""
-    push_env_image "$version" "python"   "python-env"   ""
-    push_env_image "$version" "python"   "python-env"   "2.7"
-    push_env_image "$version" "ruby"     "ruby-env"     ""
-    push_env_image "$version" "jvm"      "jvm-env"      ""
+    push_env_image "$version" "nodejs"               "node-env"            ""
+    push_env_image "$version" "nodejs"               "node-env"            "debian"
+    push_env_image "$version" "binary"               "binary-env"          ""
+    push_env_image "$version" "dotnet"               "dotnet-env"          ""
+    push_env_image "$version" "dotnet20"             "dotnet20-env"        ""
+    push_env_image "$version" "go"                   "go-env"              ""
+    push_env_image "$version" "go"                   "go-env"              "1.11.4"
+    push_env_image "$version" "go"                   "go-env"              "1.12"
+    push_env_image "$version" "perl"                 "perl-env"            ""
+    push_env_image "$version" "php7"                 "php-env"             ""
+    push_env_image "$version" "python"               "python-env"          ""
+    push_env_image "$version" "python"               "python-env"          "2.7"
+    push_env_image "$version" "ruby"                 "ruby-env"            ""
+    push_env_image "$version" "jvm"                  "jvm-env"             ""
+    push_env_image "$version" "tensorflow-serving"   "tensorflow-serving-env"  ""
 }
 
 push_env_builder_image() {
@@ -115,10 +117,11 @@ push_all_env_builders() {
     push_env_builder_image "$version" "binary"   "binary-builder"   ""
     push_env_builder_image "$version" "go"       "go-builder"       ""
     push_env_builder_image "$version" "go"       "go-builder"       "1.11.4"
+    push_env_builder_image "$version" "go"       "go-builder"       "1.12"
     push_env_builder_image "$version" "jvm"      "jvm-builder"      ""
     push_env_builder_image "$version" "nodejs"   "node-builder"     ""
-    push_env_builder_image "$version" "ruby"     "ruby-env"         ""
-    push_env_builder_image "$version" "dotnet20" "dotnet20-env"     ""
+    push_env_builder_image "$version" "ruby"     "ruby-builder"         ""
+    push_env_builder_image "$version" "dotnet20" "dotnet20-builder"     ""
 }
 
 # Push pre-upgrade-checks image
@@ -325,8 +328,6 @@ then
 fi
 
 release_environment_check $version $chartsrepo
-
-go mod vendor
 
 # Build release-builder image
 docker build -t fission-release-builder -f $GOPATH/src/github.com/fission/fission/hack/Dockerfile .
