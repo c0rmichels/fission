@@ -1,4 +1,4 @@
-# docker build -t dgpls-fission/python-env -f Dockerfile-stretch .
+# docker build -t fission/python-env:1.3-debian -f Dockerfile-debian .
 
 FROM debian:stretch-slim
 
