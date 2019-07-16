@@ -1,7 +1,24 @@
-# docker build -t dgpls-fission/builder -f cmd/builder/Dockerfile.fission-builder.stretch --build-arg GITCOMMIT=$(git rev-parse HEAD) --build-arg BUILDVERSION=$(git rev-parse HEAD) --build-arg BUILDDATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') .
+# to build this builder image separately run the following from the root of the repository:
+# docker build -t fission/builder:1.3-debian -f cmd/builder/Dockerfile.fission-builder.debian --build-arg GITCOMMIT=$(git rev-parse HEAD) --build-arg BUILDVERSION=$(git rev-parse HEAD) --build-arg BUILDDATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') .
 
 FROM golang:1.11-alpine as fission-builder
 RUN apk add bash ca-certificates git gcc g++ libc-dev
+
+ARG GOPKG=github.com/fission/fission
+
+ENV GO111MODULE=on
+
+WORKDIR /go/src/${GOPKG}
+
+# To reuse build cache, copy go.mod & go.sum and download dependencies first.
+COPY go.* ./
+
+RUN go mod download
+
+# Copy whole fission directory to work dir
+COPY ./ ./
+
+WORKDIR /go/src/${GOPKG}/cmd/builder
 
 ARG GITCOMMIT=unknown
 # E.g. GITCOMMIT=$(git rev-parse HEAD)
@@ -12,15 +29,6 @@ ARG BUILDVERSION=unknown
 ARG BUILDDATE=unknown
 # E.g. BUILDDATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 
-ARG GOPKG=github.com/fission/fission
-COPY . /go/src/${GOPKG}
-
-WORKDIR /go/src/${GOPKG}
-ENV GO111MODULE=on
-RUN go mod vendor
-ENV GO111MODULE=auto
-
-WORKDIR /go/src/${GOPKG}/cmd/builder
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -o /go/bin/builder \
     -gcflags=-trimpath=$GOPATH \
