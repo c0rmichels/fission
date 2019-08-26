@@ -1,5 +1,5 @@
 # to build this builder image separately run the following from the root of the repository:
-# docker build -t fission/builder:1.3-debian -f cmd/builder/Dockerfile.fission-builder.debian --build-arg GITCOMMIT=$(git rev-parse HEAD) --build-arg BUILDVERSION=$(git rev-parse HEAD) --build-arg BUILDDATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') .
+# docker build -t fission/builder:1.4.1-debian -f cmd/builder/Dockerfile.fission-builder.debian --build-arg GITCOMMIT=$(git rev-parse HEAD) --build-arg BUILDVERSION=$(git rev-parse HEAD) --build-arg BUILDDATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') .
 
 FROM golang:1.11-alpine as fission-builder
 RUN apk add bash ca-certificates git gcc g++ libc-dev
@@ -35,7 +35,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -asmflags=-trimpath=$GOPATH \
     -ldflags "-X github.com/fission/fission/pkg/info.GitCommit=${GITCOMMIT} -X github.com/fission/fission/pkg/info.BuildDate=${BUILDDATE} -X github.com/fission/fission/pkg/info.Version=${BUILDVERSION}"
 
-FROM debian:stretch-slim
+FROM debian:buster-slim
 COPY --from=fission-builder /go/bin/builder /
 EXPOSE 8001
 
