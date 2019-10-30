@@ -87,19 +87,19 @@ build_builder_image() {
 
 build_env_image() {
     local version=$1
-    envdir=$2
-    imgnamebase=$3
-    imgvariant=$4
+    local envdir=$2
+    local imgnamebase=$3
+    local imgvariant=$4
 
     if [ -z "$imgvariant" ]
-    then 
+    then
         # no variant specified, just use the base name
         imgname=$imgnamebase
         dockerfile="Dockerfile"
-    else 
+    else
         # variant specified - append variant to image name and assume dockerfile 
         # exists with same suffix (e.g. image node-env-debian built from Dockerfile-debian)
-        imgname="$imgname-$imgvariant"
+        imgname="$imgnamebase-$imgvariant"
         dockerfile="Dockerfile-$imgvariant"
     fi
     echo "Building $envdir -> $imgname:$version using $dockerfile"
@@ -223,9 +223,9 @@ build_yamls() {
         popd
 
         # for minikube and other environments that don't support LoadBalancer
-        helm template ${c} -n ${releaseName} --set analytics=false,analyticsNonHelmInstall=true,serviceType=NodePort,routerServiceType=NodePort > ${c}-${version}-minikube.yaml
+        helm template ${c} -n ${releaseName} --namespace fission --set analytics=false,analyticsNonHelmInstall=true,serviceType=NodePort,routerServiceType=NodePort > ${c}-${version}-minikube.yaml
         # for environments that support LoadBalancer
-        helm template ${c} -n ${releaseName} --set analytics=false,analyticsNonHelmInstall=true > ${c}-${version}.yaml
+        helm template ${c} -n ${releaseName} --namespace fission --set analytics=false,analyticsNonHelmInstall=true > ${c}-${version}.yaml
 
         # copy yaml files to build directory
         mv *.yaml ${BUILDDIR}/yamls/
@@ -266,12 +266,27 @@ build_all() {
     fi
     
     mkdir -p $BUILDDIR
-    
+
+    # generate swagger (OpenApi 2.0) doc before building bundle image
+    generate_swagger_doc
+
     build_fission_bundle_image $version $date $gitcommit
     build_fetcher_image $version $date $gitcommit
     build_builder_image $version $date $gitcommit
     build_all_cli $version $date $gitcommit
     build_pre_upgrade_checks_image $version $date $gitcommit
+
+    remove_generated_swagger_doc
+}
+
+generate_swagger_doc() {
+  pushd $DIR/pkg/apis/fission.io/v1/tool
+  ./update-generated-swagger-docs.sh
+  popd
+}
+
+remove_generated_swagger_doc() {
+  rm $DIR/pkg/apis/fission.io/v1/types_swagger_doc_generated.go
 }
 
 version=${VERSION}

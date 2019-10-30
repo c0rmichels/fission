@@ -29,8 +29,10 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/dchest/uniuri"
 	"github.com/fission/fission/pkg/utils"
@@ -43,6 +45,9 @@ import (
 
 	fv1 "github.com/fission/fission/pkg/apis/fission.io/v1"
 	"github.com/fission/fission/pkg/controller/client"
+	"github.com/fission/fission/pkg/fission-cli/cliwrapper/driver/urfavecli"
+	cmdutils "github.com/fission/fission/pkg/fission-cli/cmd"
+	"github.com/fission/fission/pkg/fission-cli/cmd/spec"
 	"github.com/fission/fission/pkg/fission-cli/log"
 	"github.com/fission/fission/pkg/fission-cli/util"
 	storageSvcClient "github.com/fission/fission/pkg/storagesvc/client"
@@ -95,7 +100,7 @@ func pkgCreate(c *cli.Context) error {
 		log.Fatal("Need --src to specify source archive, or use --deploy to specify deployment archive.")
 	}
 
-	createPackage(client, pkgNamespace, envName, envNamespace, srcArchiveFiles, deployArchiveFiles, buildcmd, "", "", false)
+	createPackage(c, client, pkgNamespace, envName, envNamespace, srcArchiveFiles, deployArchiveFiles, buildcmd, "", "", false)
 
 	return nil
 }
@@ -206,7 +211,8 @@ func updatePackage(client *client.Client, pkg *fv1.Package, envName, envNamespac
 	if needToBuild || forceRebuild {
 		// change into pending state to trigger package build
 		pkg.Status = fv1.PackageStatus{
-			BuildStatus: fv1.BuildStatusPending,
+			BuildStatus:         fv1.BuildStatusPending,
+			LastUpdateTimestamp: time.Now().UTC(),
 		}
 	}
 
@@ -321,6 +327,7 @@ func pkgList(c *cli.Context) error {
 	client := util.GetApiClient(c.GlobalString("server"))
 	// option for the user to list all orphan packages (not referenced by any function)
 	listOrphans := c.Bool("orphan")
+	status := c.String("status")
 	pkgNamespace := c.String("pkgNamespace")
 
 	pkgList, err := client.PackageList(pkgNamespace)
@@ -328,20 +335,32 @@ func pkgList(c *cli.Context) error {
 		return err
 	}
 
+	// sort the package list by lastUpdatedTimestamp
+	sort.Slice(pkgList, func(i, j int) bool {
+		return pkgList[i].Status.LastUpdateTimestamp.After(pkgList[j].Status.LastUpdateTimestamp)
+	})
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
-	fmt.Fprintf(w, "%v\t%v\t%v\n", "NAME", "BUILD_STATUS", "ENV")
+	fmt.Fprintf(w, "%v\t%v\t%v\t%v\n", "NAME", "BUILD_STATUS", "ENV", "LASTUPDATEDAT")
 	if listOrphans {
 		for _, pkg := range pkgList {
 			fnList, err := getFunctionsByPackage(client, pkg.Metadata.Name, pkg.Metadata.Namespace)
 			util.CheckErr(err, fmt.Sprintf("get functions sharing package %s", pkg.Metadata.Name))
 			if len(fnList) == 0 {
-				fmt.Fprintf(w, "%v\t%v\t%v\n", pkg.Metadata.Name, pkg.Status.BuildStatus, pkg.Spec.Environment.Name)
+				if status == "" {
+					fmt.Fprintf(w, "%v\t%v\t%v\n", pkg.Metadata.Name, pkg.Status.BuildStatus, pkg.Spec.Environment.Name)
+				} else if status == string(pkg.Status.BuildStatus) {
+					fmt.Fprintf(w, "%v\t%v\t%v\n", pkg.Metadata.Name, pkg.Status.BuildStatus, pkg.Spec.Environment.Name)
+				}
 			}
 		}
 	} else {
 		for _, pkg := range pkgList {
-			fmt.Fprintf(w, "%v\t%v\t%v\n", pkg.Metadata.Name,
-				pkg.Status.BuildStatus, pkg.Spec.Environment.Name)
+			if status == "" {
+				fmt.Fprintf(w, "%v\t%v\t%v\n", pkg.Metadata.Name, pkg.Status.BuildStatus, pkg.Spec.Environment.Name)
+			} else if status == string(pkg.Status.BuildStatus) {
+				fmt.Fprintf(w, "%v\t%v\t%v\n", pkg.Metadata.Name, pkg.Status.BuildStatus, pkg.Spec.Environment.Name)
+			}
 		}
 	}
 
@@ -485,7 +504,7 @@ func fileChecksum(fileName string) (*fv1.Checksum, error) {
 // includeFiles, but is ignored if there's more than one includeFile.
 func createArchive(client *client.Client, includeFiles []string, noZip bool, specDir string, specFile string) *fv1.Archive {
 
-	var errs *multierror.Error
+	errs := &multierror.Error{}
 
 	// check files existence
 	for _, path := range includeFiles {
@@ -511,7 +530,7 @@ func createArchive(client *client.Client, includeFiles []string, noZip bool, spe
 
 	if len(specFile) > 0 {
 		// create an ArchiveUploadSpec and reference it from the archive
-		aus := &ArchiveUploadSpec{
+		aus := &spec.ArchiveUploadSpec{
 			Name:         archiveName("", includeFiles),
 			IncludeGlobs: includeFiles,
 		}
@@ -519,19 +538,19 @@ func createArchive(client *client.Client, includeFiles []string, noZip bool, spe
 		// check if this AUS exists in the specs; if so, don't create a new one
 		fr, err := readSpecs(specDir)
 		util.CheckErr(err, "read specs")
-		if m := fr.specExists(aus, false, true); m != nil {
+		if m := fr.SpecExists(aus, false, true); m != nil {
 			fmt.Printf("Re-using previously created archive %v\n", m.Name)
 			aus.Name = m.Name
 		} else {
 			// save the uploadspec
-			err := specSave(*aus, specFile)
+			err := spec.SpecSave(*aus, specFile)
 			util.CheckErr(err, fmt.Sprintf("write spec file %v", specFile))
 		}
 
 		// create the archive object
 		ar := &fv1.Archive{
 			Type: fv1.ArchiveTypeUrl,
-			URL:  fmt.Sprintf("%v%v", ARCHIVE_URL_PREFIX, aus.Name),
+			URL:  fmt.Sprintf("%v%v", spec.ARCHIVE_URL_PREFIX, aus.Name),
 		}
 		return ar
 	}
@@ -581,7 +600,7 @@ func uploadArchive(ctx context.Context, client *client.Client, fileName string) 
 	return &archive
 }
 
-func createPackage(client *client.Client, pkgNamespace string, envName string, envNamespace string, srcArchiveFiles []string, deployArchiveFiles []string, buildcmd string, specDir string, specFile string, noZip bool) *metav1.ObjectMeta {
+func createPackage(c *cli.Context, client *client.Client, pkgNamespace string, envName string, envNamespace string, srcArchiveFiles []string, deployArchiveFiles []string, buildcmd string, specDir string, specFile string, noZip bool) *metav1.ObjectMeta {
 	pkgSpec := fv1.PackageSpec{
 		Environment: fv1.EnvironmentReference{
 			Namespace: envNamespace,
@@ -618,20 +637,21 @@ func createPackage(client *client.Client, pkgNamespace string, envName string, e
 		},
 		Spec: pkgSpec,
 		Status: fv1.PackageStatus{
-			BuildStatus: pkgStatus,
+			BuildStatus:         pkgStatus,
+			LastUpdateTimestamp: time.Now().UTC(),
 		},
 	}
 
 	if len(specFile) > 0 {
-		// if a package sith the same spec exists, don't create a new spec file
-		fr, err := readSpecs(getSpecDir(nil))
+		// if a package with the same spec exists, don't create a new spec file
+		fr, err := readSpecs(cmdutils.GetSpecDir(urfavecli.Parse(c)))
 		util.CheckErr(err, "read specs")
-		if m := fr.specExists(pkg, false, true); m != nil {
+		if m := fr.SpecExists(pkg, false, true); m != nil {
 			fmt.Printf("Re-using previously created package %v\n", m.Name)
 			return m
 		}
 
-		err = specSave(*pkg, specFile)
+		err = spec.SpecSave(*pkg, specFile)
 		util.CheckErr(err, "save package spec")
 		return &pkg.Metadata
 	} else {

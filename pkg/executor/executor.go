@@ -128,9 +128,7 @@ func (executor *Executor) serveCreateFuncServices() {
 				// It normally happened if there are multiple requests are
 				// waiting for the same function and executor failed to cre-
 				// ate service for function.
-				err = errors.Wrapf(err, "error getting service for function",
-					zap.String("function_name", m.Name),
-					zap.String("function_namespace", m.Namespace))
+				err = errors.Wrapf(err, "error getting service for function %v in namespace %v", m.Name, m.Namespace)
 				req.respChan <- &createFuncServiceResponse{
 					funcSvc: fsvc,
 					err:     err,
@@ -207,8 +205,11 @@ func serveMetric(logger *zap.Logger) {
 
 // StartExecutor Starts executor and the executor components such as Poolmgr,
 // deploymgr and potential future executor types
-func StartExecutor(logger *zap.Logger, fissionNamespace string, functionNamespace string, envBuilderNamespace string, port int) error {
+func StartExecutor(logger *zap.Logger, functionNamespace string, envBuilderNamespace string, port int) error {
 	fissionClient, kubernetesClient, _, err := crd.MakeFissionClient()
+	if err != nil {
+		return errors.Wrap(err, "failed to get kubernetes client")
+	}
 
 	err = fissionClient.WaitForCRDs()
 	if err != nil {
@@ -221,10 +222,6 @@ func StartExecutor(logger *zap.Logger, fissionNamespace string, functionNamespac
 	}
 
 	restClient := fissionClient.GetCrdClient()
-	if err != nil {
-		return errors.Wrap(err, "failed to get kubernetes client")
-	}
-
 	fsCache := fscache.MakeFunctionServiceCache(logger)
 
 	poolID := strings.ToLower(uniuri.NewLen(8))

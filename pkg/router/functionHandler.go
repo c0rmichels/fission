@@ -27,16 +27,13 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strings"
 	"time"
 
-	"github.com/fission/fission/pkg/types"
-	"github.com/gorilla/mux"
 	"github.com/pkg/errors"
-	"github.com/satori/go.uuid"
 	"go.opencensus.io/plugin/ochttp"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	fv1 "github.com/fission/fission/pkg/apis/fission.io/v1"
 	"github.com/fission/fission/pkg/crd"
@@ -45,6 +42,7 @@ import (
 	executorClient "github.com/fission/fission/pkg/executor/client"
 	"github.com/fission/fission/pkg/redis"
 	"github.com/fission/fission/pkg/throttler"
+	"github.com/fission/fission/pkg/types"
 )
 
 const (
@@ -67,6 +65,7 @@ type (
 		recorderName             string
 		isDebugEnv               bool
 		svcAddrUpdateThrottler   *throttler.Throttler
+		functionTimeoutMap       map[k8stypes.UID]int
 	}
 
 	tsRoundTripperParams struct {
@@ -93,6 +92,7 @@ type (
 	RetryingRoundTripper struct {
 		logger      *zap.Logger
 		funcHandler *functionHandler
+		timeout     int
 	}
 
 	// To keep the request body open during retries, we create an interface with Close operation being a no-op.
@@ -290,8 +290,24 @@ func (roundTripper RetryingRoundTripper) RoundTrip(req *http.Request) (*http.Res
 
 		overhead := time.Since(startTime)
 
+		roundTripper.logger.Debug("request headers", zap.Any("headers", req.Header))
+
+		// Creating context for client
+		if roundTripper.timeout <= 0 {
+			roundTripper.timeout = fv1.DEFAULT_FUNCTION_TIMEOUT
+		}
+
+		roundTripper.logger.Debug("Creating context for request for ", zap.Any("time", roundTripper.timeout))
+		// pass request context as parent context for the case
+		// that user aborts connection before timeout. Otherwise,
+		// the request won't be canceled until the deadline exceeded
+		// which may be a potential security issue.
+		ctx, closeCtx := context.WithTimeout(req.Context(), time.Duration(roundTripper.timeout)*time.Second)
+
 		// forward the request to the function service
-		resp, err = ocRoundTripper.RoundTrip(req)
+		resp, err = ocRoundTripper.RoundTrip(req.WithContext(ctx))
+		closeCtx()
+
 		if err == nil {
 			// Track metrics
 			httpMetricLabels.code = resp.StatusCode
@@ -338,7 +354,6 @@ func (roundTripper RetryingRoundTripper) RoundTrip(req *http.Request) (*http.Res
 
 		// if transport.RoundTrip returns a non-network dial error (e.g. "context canceled"), then relay it back to user
 		if !isNetDialErr {
-			err = errors.Wrapf(err, "error sending request to function %v", fnMeta.Name)
 			return resp, err
 		}
 
@@ -407,25 +422,13 @@ func (fh *functionHandler) tapService(serviceUrl *url.URL) {
 }
 
 func (fh functionHandler) handler(responseWriter http.ResponseWriter, request *http.Request) {
-	// retrieve url params and add them to request header
-	vars := mux.Vars(request)
-	for k, v := range vars {
-		request.Header.Set(fmt.Sprintf("X-Fission-Params-%v", k), v)
-	}
-
-	var reqUID string
-	if len(fh.recorderName) > 0 {
-		UID := strings.ToLower(uuid.NewV4().String())
-		reqUID = "REQ" + UID
-		request.Header.Set("X-Fission-ReqUID", reqUID)
-		fh.logger.Debug("record request", zap.String("request_id", reqUID))
-	}
-
 	if fh.httpTrigger != nil && fh.httpTrigger.Spec.FunctionReference.Type == types.FunctionReferenceTypeFunctionWeights {
 		// canary deployment. need to determine the function to send request to now
 		fnMetadata := getCanaryBackend(fh.functionMetadataMap, fh.fnWeightDistributionList)
 		if fnMetadata == nil {
-			fh.logger.Error("could not get canary backend", zap.String("request_id", reqUID))
+			fh.logger.Error("could not get canary backend",
+				zap.Any("metadataMap", fh.functionMetadataMap),
+				zap.Any("distributionList", fh.fnWeightDistributionList))
 			// TODO : write error to responseWrite and return response
 			return
 		}
@@ -433,8 +436,14 @@ func (fh functionHandler) handler(responseWriter http.ResponseWriter, request *h
 		fh.logger.Debug("chosen function backend's metadata", zap.Any("metadata", fh.function))
 	}
 
+	// set record id
+	setRecordRequestIDHeader(fh.recorderName, request)
+
+	// url path
+	setPathInfoToHeader(request)
+
 	// system params
-	MetadataToHeaders(HEADERS_FISSION_FUNCTION_PREFIX, fh.function, request)
+	setFunctionMetadataToHeader(fh.function, request)
 
 	director := func(req *http.Request) {
 		if _, ok := req.Header["User-Agent"]; !ok {
@@ -443,12 +452,19 @@ func (fh functionHandler) handler(responseWriter http.ResponseWriter, request *h
 		}
 	}
 
+	var timeout int = fv1.DEFAULT_FUNCTION_TIMEOUT
+	if fh.functionTimeoutMap != nil {
+		timeout = fh.functionTimeoutMap[fh.function.GetUID()]
+	}
+
 	proxy := &httputil.ReverseProxy{
 		Director: director,
 		Transport: &RetryingRoundTripper{
 			logger:      fh.logger.Named("roundtripper"),
 			funcHandler: &fh,
+			timeout:     timeout,
 		},
+		ErrorHandler: getProxyErrorHandler(fh.logger, fh.function),
 	}
 
 	proxy.ServeHTTP(responseWriter, request)
@@ -487,6 +503,32 @@ func getCanaryBackend(fnMetadatamap map[string]*metav1.ObjectMeta, fnWtDistribut
 	fnName := findCeil(randomNumber, fnWtDistributionList)
 
 	return fnMetadatamap[fnName]
+}
+
+// getProxyErrorHandler returns a reverse proxy error handler
+func getProxyErrorHandler(logger *zap.Logger, fnMeta *metav1.ObjectMeta) func(rw http.ResponseWriter, req *http.Request, err error) {
+	return func(rw http.ResponseWriter, req *http.Request, err error) {
+		status := http.StatusBadGateway
+		switch err {
+		case context.Canceled:
+			// 499 CLIENT CLOSED REQUEST
+			// A non-standard status code introduced by nginx for the case
+			// when a client closes the connection while nginx is processing the request.
+			// Reference: https://httpstatuses.com/499
+			status = 499
+			logger.Debug("client closes the connection",
+				zap.Any("function", fnMeta), zap.Any("request_header", req.Header))
+		case context.DeadlineExceeded:
+			status = http.StatusGatewayTimeout
+			logger.Error("function not responses before the timeout",
+				zap.Any("function", fnMeta), zap.Any("request_header", req.Header))
+		default:
+			logger.Error("error sending request to function",
+				zap.Error(err), zap.Any("function", fnMeta), zap.Any("request_header", req.Header))
+		}
+		// TODO: return error message that contains traceable UUID back to user. Issue #693
+		rw.WriteHeader(status)
+	}
 }
 
 // addForwardedHostHeader add "forwarded host" to request header
