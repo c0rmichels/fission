@@ -1,4 +1,4 @@
-# docker build -t fission/python-env:1.4.1-debian -f Dockerfile-debian .
+# docker build -t fission/python-env:1.6.0-debian -f Dockerfile-debian .
 
 FROM debian:buster-slim
 
