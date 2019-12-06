@@ -1,7 +1,7 @@
 # to build this python builder image run the following from this directory:
-# docker build -t fission/python-builder:1.4.1-debian -f Dockerfile-debian .
+# docker build -t fission/python-builder:1.6.0-debian -f Dockerfile-debian .
 
-ARG BUILDER_IMAGE=fission/builder:1.4.1-debian
+ARG BUILDER_IMAGE=fission/builder:1.6.0-debian
 FROM ${BUILDER_IMAGE}
 
 RUN apt-get update && \

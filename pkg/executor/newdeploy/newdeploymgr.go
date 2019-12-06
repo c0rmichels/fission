@@ -30,8 +30,8 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	apiv1 "k8s.io/api/core/v1"
-	"k8s.io/api/extensions/v1beta1"
 	k8sErrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -127,7 +127,6 @@ func MakeNewDeploy(
 }
 
 func (deploy *NewDeploy) Run(ctx context.Context) {
-	//go deploy.service()
 	go deploy.funcController.Run(ctx.Done())
 	go deploy.envController.Run(ctx.Done())
 	go deploy.idleObjectReaper()
@@ -138,33 +137,44 @@ func (deploy *NewDeploy) initFuncController() (k8sCache.Store, k8sCache.Controll
 	listWatch := k8sCache.NewListWatchFromClient(deploy.crdClient, "functions", metav1.NamespaceAll, fields.Everything())
 	store, controller := k8sCache.NewInformer(listWatch, &fv1.Function{}, resyncPeriod, k8sCache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			fn := obj.(*fv1.Function)
-			_, err := deploy.createFunction(fn, true)
-			if err != nil {
-				deploy.logger.Error("error eager creating function",
-					zap.Error(err),
-					zap.Any("function", fn))
-			}
+			// TODO: A workaround to process items in parallel. We should use workqueue ("k8s.io/client-go/util/workqueue")
+			// and worker pattern to process items instead of moving process to another goroutine.
+			// example: https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/job/job_controller.go
+			go func() {
+				fn := obj.(*fv1.Function)
+				deploy.logger.Debug("create deployment for function", zap.Any("fn", fn.Metadata), zap.Any("fnspec", fn.Spec))
+				_, err := deploy.createFunction(fn, true)
+				if err != nil {
+					deploy.logger.Error("error eager creating function",
+						zap.Error(err),
+						zap.Any("function", fn))
+				}
+				deploy.logger.Debug("end create deployment for function", zap.Any("fn", fn.Metadata), zap.Any("fnspec", fn.Spec))
+			}()
 		},
 		DeleteFunc: func(obj interface{}) {
 			fn := obj.(*fv1.Function)
-			err := deploy.deleteFunction(fn)
-			if err != nil {
-				deploy.logger.Error("error deleting function",
-					zap.Error(err),
-					zap.Any("function", fn))
-			}
+			go func() {
+				err := deploy.deleteFunction(fn)
+				if err != nil {
+					deploy.logger.Error("error deleting function",
+						zap.Error(err),
+						zap.Any("function", fn))
+				}
+			}()
 		},
 		UpdateFunc: func(oldObj interface{}, newObj interface{}) {
 			oldFn := oldObj.(*fv1.Function)
 			newFn := newObj.(*fv1.Function)
-			err := deploy.updateFunction(oldFn, newFn)
-			if err != nil {
-				deploy.logger.Error("error updating function",
-					zap.Error(err),
-					zap.Any("old_function", oldFn),
-					zap.Any("new_function", newFn))
-			}
+			go func() {
+				err := deploy.updateFunction(oldFn, newFn)
+				if err != nil {
+					deploy.logger.Error("error updating function",
+						zap.Error(err),
+						zap.Any("old_function", oldFn),
+						zap.Any("new_function", newFn))
+				}
+			}()
 		},
 	})
 	return store, controller
@@ -187,10 +197,12 @@ func (deploy *NewDeploy) initEnvController() (k8sCache.Store, k8sCache.Controlle
 					function, err := deploy.fissionClient.Functions(f.Metadata.Namespace).Get(f.Metadata.Name)
 					if err != nil {
 						deploy.logger.Error("Error getting function", zap.Error(err), zap.Any("function", function))
+						continue
 					}
 					err = deploy.updateFuncDeployment(function, newEnv)
 					if err != nil {
 						deploy.logger.Error("Error updating function", zap.Error(err), zap.Any("function", function))
+						continue
 					}
 				}
 			}
@@ -235,7 +247,7 @@ func (deploy *NewDeploy) RefreshFuncPods(logger *zap.Logger, f fv1.Function) err
 		UID:       env.Metadata.UID,
 	})
 
-	dep, err := deploy.kubernetesClient.ExtensionsV1beta1().Deployments(metav1.NamespaceAll).List(metav1.ListOptions{
+	dep, err := deploy.kubernetesClient.AppsV1().Deployments(metav1.NamespaceAll).List(metav1.ListOptions{
 		LabelSelector: labels.Set(funcLabels).AsSelector().String(),
 	})
 
@@ -250,7 +262,7 @@ func (deploy *NewDeploy) RefreshFuncPods(logger *zap.Logger, f fv1.Function) err
 
 	// Ideally there should be only one deployment but for now we rely on label/selector to ensure that condition
 	for _, deployment := range dep.Items {
-		_, err := deploy.kubernetesClient.ExtensionsV1beta1().Deployments(deployment.ObjectMeta.Namespace).Patch(deployment.ObjectMeta.Name,
+		_, err := deploy.kubernetesClient.AppsV1().Deployments(deployment.ObjectMeta.Namespace).Patch(deployment.ObjectMeta.Name,
 			k8sTypes.StrategicMergePatchType,
 			[]byte(patch))
 		if err != nil {
@@ -273,7 +285,7 @@ func (deploy *NewDeploy) createFunction(fn *fv1.Function, firstcreate bool) (*fs
 	})
 
 	if err != nil {
-		e := "error updating service address entry for function"
+		e := "error creating k8s resources for function"
 		deploy.logger.Error(e,
 			zap.Error(err),
 			zap.String("function_name", fn.Metadata.Name),
@@ -312,9 +324,10 @@ func (deploy *NewDeploy) fnCreate(fn *fv1.Function, firstcreate bool) (*fscache.
 	if !firstcreate {
 		// retrieve back the previous obj name for later use.
 		fsvc, err := deploy.fsCache.GetByFunctionUID(fn.Metadata.UID)
-		if err == nil {
-			objName = fsvc.Name
+		if err != nil {
+			return nil, errors.Wrap(err, "error getting existed function service cache")
 		}
+		objName = fsvc.Name
 	}
 	deployLabels := deploy.getDeployLabels(fn.Metadata, env.Metadata)
 
@@ -337,6 +350,7 @@ func (deploy *NewDeploy) fnCreate(fn *fv1.Function, firstcreate bool) (*fscache.
 		return nil, errors.Wrapf(err, "error creating service %v", objName)
 	}
 	svcAddress := fmt.Sprintf("%v.%v", svc.Name, svc.Namespace)
+
 	depl, err := deploy.createOrGetDeployment(fn, env, objName, deployLabels, ns, firstcreate)
 	if err != nil {
 		deploy.logger.Error("error creating deployment", zap.Error(err), zap.String("deployment", objName))
@@ -558,7 +572,7 @@ func (deploy *NewDeploy) updateFuncDeployment(fn *fv1.Function, env *fv1.Environ
 }
 
 func (deploy *NewDeploy) fnDelete(fn *fv1.Function) error {
-	var multierr *multierror.Error
+	multierr := &multierror.Error{}
 
 	// GetByFunction uses resource version as part of cache key, however,
 	// the resource version in function metadata will be changed when a function
@@ -651,7 +665,7 @@ func (deploy *NewDeploy) IsValid(fsvc *fscache.FuncSvc) bool {
 		return false
 	}
 
-	currentDeploy, err := deploy.kubernetesClient.ExtensionsV1beta1().
+	currentDeploy, err := deploy.kubernetesClient.AppsV1().
 		Deployments(deployObj.Namespace).Get(deployObj.Name, metav1.GetOptions{})
 	if err != nil {
 		deploy.logger.Error("error validating function deployment", zap.Error(err), zap.String("function", fsvc.Function.Name))
@@ -719,7 +733,7 @@ func (deploy *NewDeploy) idleObjectReaper() {
 				continue
 			}
 
-			currentDeploy, err := deploy.kubernetesClient.ExtensionsV1beta1().
+			currentDeploy, err := deploy.kubernetesClient.AppsV1().
 				Deployments(deployObj.Namespace).Get(deployObj.Name, metav1.GetOptions{})
 			if err != nil {
 				deploy.logger.Error("error validating function deployment", zap.Error(err), zap.String("function", fsvc.Function.Name))
@@ -756,12 +770,12 @@ func (deploy *NewDeploy) scaleDeployment(deplNS string, deplName string, replica
 		zap.String("deployment", deplName),
 		zap.String("namespace", deplNS),
 		zap.Int32("replicas", replicas))
-	_, err := deploy.kubernetesClient.ExtensionsV1beta1().Deployments(deplNS).UpdateScale(deplName, &v1beta1.Scale{
+	_, err := deploy.kubernetesClient.AppsV1().Deployments(deplNS).UpdateScale(deplName, &autoscalingv1.Scale{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deplName,
 			Namespace: deplNS,
 		},
-		Spec: v1beta1.ScaleSpec{
+		Spec: autoscalingv1.ScaleSpec{
 			Replicas: replicas,
 		},
 	})

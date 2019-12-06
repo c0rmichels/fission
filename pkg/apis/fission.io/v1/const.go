@@ -19,6 +19,7 @@ package v1
 const (
 	EXECUTOR_INSTANCEID_LABEL string = "executorInstanceId"
 	POOLMGR_INSTANCEID_LABEL  string = "poolmgrInstanceId"
+	DEFAULT_FUNCTION_TIMEOUT  int    = 60
 )
 
 const (
@@ -100,4 +101,8 @@ const (
 
 	// set a max number for iterations to prevent infinite processing of canary config
 	MaxIterationsForCanaryConfig = 10
+)
+
+const (
+	DefaultSpecializationTimeOut = 120
 )
