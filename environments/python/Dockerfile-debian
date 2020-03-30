@@ -1,4 +1,4 @@
-# docker build -t fission/python-env:1.6.0-debian -f Dockerfile-debian .
+# docker build -t dockerrepo.antwerpen.be/fission/python-env:1.6.0-debian -f Dockerfile-debian .
 
 FROM debian:buster-slim
 
@@ -9,8 +9,9 @@ RUN apt-get update && \
     pip3 install --upgrade pip && \
     rm -r /root/.cache
 
-COPY requirements.txt server.py /app/
+COPY requirements.txt /app/
 RUN pip3 install -r requirements.txt
+COPY server.py.debian /app/server.py
 
 ENTRYPOINT ["python3"]
 CMD ["server.py"]
