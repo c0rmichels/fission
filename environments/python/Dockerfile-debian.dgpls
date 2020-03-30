@@ -1,7 +1,7 @@
 # to build this python env image run the following from this directory:
 # docker build -t dockerrepo.antwerpen.be/fission-dgpls/python-env:1.6.0-debian -f Dockerfile-debian.dgpls .
 
-FROM fission/python-env:1.6.0-debian
+FROM dockerrepo.antwerpen.be/fission/python-env:1.6.0-debian
 
 RUN apt-get update && \
     apt-get install -y libffi-dev libpq-dev libssl-dev
